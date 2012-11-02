@@ -10,12 +10,17 @@
 	
 	<cfset Super.init(argumentCollection=arguments)>
 	
+	<cfset upgrade()>
+	
+	<!---<cfset Variables.DateLastUpdated = 0>--->
+	<cfset updateFeeds()>
+	
 	<cfreturn This>
 </cffunction>
 
-<cffunction name="DateAddInterval" returntype="date" output="no">
+<cffunction name="DateAddInterval" access="public" returntype="string" output="no">
 	<cfargument name="interval" type="string" required="true">
-	<cfargument name="date" type="date" default="#now()#">
+	<cfargument name="date" type="string" default="#now()#">
 	
 	<cfset var result = arguments.date>
 	<cfset var timespans = "millisecond,second,minute,hour,day,week,month,quarter,year">
@@ -33,6 +38,10 @@
 	<cfset var sNums = 0>
 	<cfset var isSubtraction = Left(Trim(arguments.interval),1) EQ "-">
 	<cfset var sub = "">
+	
+	<cfif NOT isDate(Arguments.date)>
+		<cfreturn "">
+	</cfif>
 	
 	<cfif isSubtraction>
 		<cfset arguments.interval = Trim(ReplaceNoCase(arguments.interval,"-","","ALL"))>
@@ -115,45 +124,86 @@
 	
 </cffunction>
 
+<cffunction name="getDateLastUpdated" access="public" returntype="date" output="no">
+	<cfreturn Variables.DateLastUpdated>
+</cffunction>
+
+<cffunction name="getOutdatedFeeds" access="public" returntype="query" output="false" hint="">
+	<cfargument name="interval" type="string" default="daily">
+	
+	<cfset var qFeeds = Variables.Feeds.getFeeds(UpdatedBefore=DateAddInterval("-#arguments.interval#",now()),fieldlist="FeedID,FeedName")>
+	
+	<cfreturn qFeeds>
+</cffunction>
+
+<cffunction name="getInterval" access="public" returntype="string" output="no">
+	<cfreturn Variables.Interval>
+</cffunction>
+
 <cffunction name="updateFeed" access="public" returntype="any" output="false" hint="">
 	<cfargument name="FeedID" type="numeric" required="yes">
 	<cfargument name="force" type="boolean" default="false">
 	
-	<cfset var qFeed = variables.Feeds.getFeed(FeedID=arguments.FeedID,fieldlist="FeedURL,DateUpdated")>
+	<cfset var qFeed = variables.Feeds.getFeed(FeedID=arguments.FeedID,fieldlist="FeedURL,DateLastAttempted,DateFeedLastUpdated")>
 	<cfset var qItems = 0>
 	
-	<cfif arguments.force OR DateAddInterval(variables.interval,qFeed.DateUpdated) GTE now()>
-		<cflock name="#Hash('RSSReader_#arguments.FeedID#_#qFeed.FeedURL#')#" timeout="60">
-			<!--- Extra check in case we got here after waiting on another lock to clear --->
-			<cfif NOT arguments.force>
-				<cfset qFeed = variables.Feeds.getFeed(FeedID=arguments.FeedID,fieldlist="FeedURL,DateUpdated")>
-			</cfif>
-			<cfif arguments.force OR DateAddInterval(variables.interval,qFeed.DateUpdated) GTE now()>
-				<cfset qItems = getRSSItems(qFeed.FeedURL)>
-				<cfloop query="qItems">
-					<cfset variables.Items.addItem(
-						FeedID=arguments.FeedID,
-						Title=title,
-						ItemDescription=description,
-						link=link,
-						quid=guid,
-						PubDate=pubdate
-					)>
-				</cfloop>
-				<cfset variables.Feeds.saveRecord(FeedID=arguments.FeedID,DateUpdated=now())>
-			</cfif>
-		</cflock>
+	<cfif qFeed.RecordCount>
+		<cfif NOT ( isDate(qFeed.DateFeedLastUpdated) OR isDate(qFeed.DateLastAttempted) )>
+			<cfset arguments.force = true>
+		</cfif>
+		<cfif
+				arguments.force
+			OR	(
+						DateAddInterval(variables.interval,qFeed.DateFeedLastUpdated) LTE now()
+					AND	DateAddInterval(variables.interval,qFeed.DateLastAttempted) LTE now()
+				)
+		>
+			<cfset variables.Feeds.saveRecord(FeedID=arguments.FeedID,DateLastAttempted=now())>
+			<cflock name="#Hash('RSSReader_#arguments.FeedID#_#qFeed.FeedURL#')#" timeout="60" throwontimeout="no">
+				<!--- Extra check in case we got here after waiting on another lock to clear --->
+				<cfif NOT arguments.force>
+					<cfset qFeed = variables.Feeds.getFeed(FeedID=arguments.FeedID,fieldlist="FeedURL,DateFeedLastUpdated,DateLastAttempted")>
+					<cfif NOT isDate(qFeed.DateFeedLastUpdated)>
+						<cfset arguments.force = true>
+					</cfif>
+				</cfif>
+				<cfif
+						arguments.force
+					OR	DateAddInterval(variables.interval,qFeed.DateFeedLastUpdated) LTE now()
+				>
+					<cfset qItems = getRSSItems(qFeed.FeedURL)>
+					<cfloop query="qItems">
+						<cfset variables.Items.addItem(
+							FeedID=arguments.FeedID,
+							Title=title,
+							ItemDescription=description,
+							link=link,
+							guid=guid,
+							PubDate=pubdate
+						)>
+					</cfloop>
+					<cfset variables.Feeds.saveRecord(FeedID=arguments.FeedID,DateFeedLastUpdated=now())>
+				</cfif>
+			</cflock>
+		</cfif>
 	</cfif>
 	
 </cffunction>
 
 <cffunction name="updateFeeds" access="public" returntype="any" output="false" hint="">
 	
-	<cfset var qFeeds = variables.Feeds.getFeeds(UpdatedBefore=DateAddInterval("-#arguments.interval#",now()),fieldlist="FeedID")>
+	<cfset var qFeeds = 0>
 	
-	<cfloop query="qFeeds">
-		<cfset updateFeed(FeedID)>
-	</cfloop>
+	<cfif
+			( NOT StructKeyExists(Variables,"DateLastUpdated") )
+		OR	DateAddInterval(variables.interval,Variables.DateLastUpdated) LTE now()
+	>
+		<cfset qFeeds = getOutdatedFeeds()>
+		<cfloop query="qFeeds">
+			<cfset updateFeed(FeedID)>
+		</cfloop>
+		<cfset Variables.DateLastUpdated = now()>
+	</cfif>
 	
 </cffunction>
 
@@ -163,11 +213,12 @@
 	<cfset var CFHTTP = 0>
 	<cfset var xData = 0>
 	<cfset var axItems = 0>
-	<cfset var cols = "title,description,pubDate,link,guid">
+	<cfset var cols = "title,description,pubDate,updated,link,guid">
 	<cfset var qItems = QueryNew(cols)>
 	<cfset var ii = 0>
 	<cfset var col = "">
 	<cfset var RSSText = "">
+	<cfset var DatePublished = 0>
 	
 	<cfhttp url="#arguments.source#">
 		<cfhttpparam type="Header" name="Accept-Encoding" value="deflate;q=0">
@@ -196,7 +247,19 @@
 		<cfloop index="ii" from="1" to="#ArrayLen(axItems)#">
 			<cfloop list="#cols#" index="col">
 				<cfif StructKeyExists(axItems[ii],col)>
-					<cfset QuerySetCell(qItems,col,HTMLEditFormat(axItems[ii][col].XmlText),ii)>
+					<cfif col EQ "pubdate" OR col EQ "updated">
+						<cftry>
+							<cfset DatePublished = left(HTMLEditFormat(axItems[ii][col].XmlText),16)>
+							<!---<cfset DatePublished = Replace(DatePublished,"T"," ","ALL")>--->
+							<cfset DatePublished = ParseDateTime(DatePublished)>
+							<cfset QuerySetCell(qItems,"pubdate",DatePublished,ii)>
+						<cfcatch>
+							<cfset QuerySetCell(qItems,"pubdate",now(),ii)>
+						</cfcatch>
+						</cftry>
+					<cfelse>
+						<cfset QuerySetCell(qItems,col,HTMLEditFormat(axItems[ii][col].XmlText),ii)>
+					</cfif>
 				</cfif>
 			</cfloop>
 		</cfloop>
@@ -205,6 +268,22 @@
 	</cftry>
 	
 	<cfreturn qItems>
+</cffunction>
+
+<cffunction name="upgrade" access="private" returntype="void" output="no">
+	
+	<cfset upgradeDateFeedLastUpdated()>
+	
+</cffunction>
+
+<cffunction name="upgradeDateFeedLastUpdated" access="private" returntype="void" output="no">
+	
+	<cfquery datasource="#Variables.DataMgr.getDatasource()#">
+	UPDATE	rssFeeds
+	SET		DateFeedLastUpdated = DateCreated
+	WHERE	DateFeedLastUpdated IS NULL
+	</cfquery>
+	
 </cffunction>
 
 <cffunction name="xml" access="public" output="yes">
@@ -220,7 +299,9 @@
 			help="This is the URL of the RSS feed itself."
 		/>
 		<field name="SiteURL" Label="Site URL" type="text" Length="240" help="This is the URL for the site with which this feed is associated." />
-		<filter name="UpdatedBefore" field="DateUpdated" operator="LTE" />
+		<field name="DateLastAttempted" Label="Date Last Attempted" type="date" />
+		<field name="DateFeedLastUpdated" Label="Date Last Updated" type="date" />
+		<filter name="UpdatedBefore" field="DateFeedLastUpdated" operator="LTE" />
 	</table>
 	<table entity="Item" labelField="Title" Specials="CreationDate" sortField="PubDate" sortdir="DESC">
 		<field fentity="Feed" />
@@ -240,8 +321,12 @@
 			<cfinvokeargument name="ComponentPath" value="#sMe.name#">
 			<cfinvokeargument name="Component" value="#This#">
 			<cfinvokeargument name="MethodName" value="updateFeeds">
-			<cfinvokeargument name="interval" value="daily">
-			<cfinvokeargument name="hours" value="2,3">
+			<cfinvokeargument name="interval" value="#variables.interval#">
+			<cfif variables.interval EQ "daily">
+				<cfinvokeargument name="hours" value="2,3">
+			<cfelse>
+				<cfinvokeargument name="hours" value="">
+			</cfif>
 		</cfinvoke>
 	</cfif>
 </cffunction>

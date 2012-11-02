@@ -27,6 +27,8 @@
 		AND	NOT StructKeyExists(variables.RSSReader,"Scheduler")
 	>
 		<cfset variables.RSSReader.updateFeed(arguments.FeedID)>
+	<cfelse>
+		<cfset variables.RSSReader.updateFeeds()>
 	</cfif>
 	
 	<cfreturn getRecords(argumentCollection=arguments)>
