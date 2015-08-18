@@ -28,7 +28,7 @@
 	>
 		<cfset variables.RSSReader.updateFeed(arguments.FeedID)>
 	<cfelse>
-		<cfset variables.RSSReader.updateFeeds()>
+		<cfset variables.RSSReader.updateFeeds(false)>
 	</cfif>
 	
 	<cfreturn getRecords(argumentCollection=arguments)>

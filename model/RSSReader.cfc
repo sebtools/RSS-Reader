@@ -12,9 +12,6 @@
 	
 	<cfset upgrade()>
 	
-	<!---<cfset Variables.DateLastUpdated = 0>--->
-	<cfset updateFeeds()>
-	
 	<cfreturn This>
 </cffunction>
 
@@ -191,11 +188,13 @@
 </cffunction>
 
 <cffunction name="updateFeeds" access="public" returntype="any" output="false" hint="">
-	
+	<cfargument name="force" type="boolean" default="true">
+
 	<cfset var qFeeds = 0>
 	
 	<cfif
-			( NOT StructKeyExists(Variables,"DateLastUpdated") )
+			Arguments.force
+		OR	( NOT StructKeyExists(Variables,"DateLastUpdated") )
 		OR	DateAddInterval(variables.interval,Variables.DateLastUpdated) LTE now()
 	>
 		<cfset qFeeds = getOutdatedFeeds()>
